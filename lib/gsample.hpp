@@ -8,6 +8,7 @@
 #include <random>
 
 #include "./constants.hpp"
+#include "./ga_config.hpp"
 #include "./simplemath.hpp"
 #include "rng/Xoshiro256plus.h"
 
@@ -51,6 +52,10 @@ typedef struct {
   bool hayrecentbins;
   double NeMed;
   uint8_t flags;
+  // Smoothness knobs read by CalculaSCImpl. Initialised from the
+  // compile-time -DGA_* defaults via MakeDefaultGAConfig() so the
+  // existing non-combo builds keep their previous behaviour.
+  GAConfig gaConfig;
 } GsampleInfo;
 
 int ProcessFile(std::string fichero, double clow, double chigh,

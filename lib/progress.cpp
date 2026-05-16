@@ -117,6 +117,11 @@ void ProgressStatus::SetBestScore(double score, int completed, int total) {
   bestScore.subtitle.clear();
 }
 
+void ProgressStatus::ResetBestScore() {
+  std::lock_guard<std::mutex> lk(mu);
+  bestScore = BestScoreView{};
+}
+
 void ProgressStatus::SetBestScoreLabeled(double score,
                                          const std::string& title,
                                          const std::string& subtitle) {
@@ -131,7 +136,6 @@ void ProgressStatus::SetBestScoreLabeled(double score,
   bestScore.completedRounds = 0;
   bestScore.totalRounds = 0;
 }
-
 
 ProgressSnapshot ProgressStatus::Snapshot() const {
   std::lock_guard<std::mutex> lk(mu);

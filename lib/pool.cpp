@@ -54,14 +54,34 @@ void SetInitialPoolParameters(Pool* pool, double mincval) {
   pool->numGenerations = kNumGenerations;
   pool->numChildren    = kNumDes;
 
-  pool->mutParams.frecMut          = 0.3;
-  pool->mutParams.efectoMut        = 0.3;
+  // Empirical defaults from the original GONE2 implementation.
+  // Overridable at compile time for sweeps; if they hold up under a
+  // wider benchmark we should consider turning some of these into
+  // runtime knobs alongside the kick parameters.
+#ifndef GA_FREC_MUT
+#define GA_FREC_MUT 0.3
+#endif
+#ifndef GA_EFECTO_MUT
+#define GA_EFECTO_MUT 0.3
+#endif
+#ifndef GA_FREC_MUT_LATERAL
+#define GA_FREC_MUT_LATERAL 0.2
+#endif
+  pool->mutParams.frecMut          = GA_FREC_MUT;
+  pool->mutParams.efectoMut        = GA_EFECTO_MUT;
   pool->mutParams.efectoMutLateral = 5.0;
   pool->mutParams.frecRec          = 0.6;
   pool->mutParams.frecNoRec        = 0.3;
-  pool->mutParams.frecMutLateral   = 0.2;
+  pool->mutParams.frecMutLateral   = GA_FREC_MUT_LATERAL;
   pool->mutParams.maxSegmentos     = 4;
   pool->mutParams.solape           = true;
+  // Run() will turn the heavy-tail kicks on for the first 40% of
+  // generations and off afterwards (two-stage exploration). Start
+  // off so PrePopulatePool's CalculaSC calls don't see the kick.
+  pool->heavyTailActive = false;
+  // Initialise from compile-time defaults; libgone overrides per
+  // pass in the combo build.
+  pool->gaConfig = MakeDefaultGAConfig();
 }
 
 void PrePopulatePool(Pool* pool, GsampleInfo* sampleInfo) {
@@ -359,6 +379,16 @@ void MutateNeRnd(Bicho* bicho, Pool* pool) {
       efecto =
           bicho->NeBl[posiblock] * xprng.uniforme01() * kEfectoMutSuave;
     }
+    // Two-stage heavy-tailed kick: during the exploration phase
+    // Run() leaves pool->heavyTailActive=true, so pool->gaConfig
+    // .kickProb of mutations get a ×kickMag magnitude. Larger /
+    // more frequent kicks make the scout escape basins more
+    // aggressively but also push the refinement into stepper Ne
+    // curves on gradually-changing demographies.
+    if (pool->heavyTailActive &&
+        xprng.uniforme01() < pool->gaConfig.kickProb) {
+      efecto *= pool->gaConfig.kickMag;
+    }
     if (xprng.uniforme01() < 0.5) efecto = -efecto;
 
     const double NeMutado = bicho->NeBl[posiblock] + efecto;
@@ -540,7 +570,16 @@ void RunDbg(Pool* pool, GsampleInfo* sampleInfo, std::string fichSal) {
 }
 
 void Run(Pool* pool, GsampleInfo* sampleInfo, std::string /*fichSal*/) {
+  // Two-stage exploration: aggressive heavy-tail kicks during the
+  // first GA_SCOUT_FRAC fraction of generations (scout phase), then
+  // off for the remainder (refinement). Empirically improves
+  // sharp-transition cases (e.g. DROP); a smaller scout window or
+  // gentler kick reduces the step-flavoured Ne curves on smoothly-
+  // varying demographies (e.g. data_expsoft).
+  const int kStageBoundary =
+      static_cast<int>(pool->numGenerations * pool->gaConfig.scoutFrac);
   for (int gen = 0; gen < pool->numGenerations; ++gen) {
+    pool->heavyTailActive = (gen < kStageBoundary);
     ApplyGenerationSchedule(pool, gen);
     ReproducePool(pool, sampleInfo);
   }

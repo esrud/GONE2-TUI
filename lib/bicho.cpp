@@ -1,6 +1,34 @@
 
 #include "./bicho.hpp"
 
+#include <cmath>
+
+// Bin-weighting and smoothness regularisation knobs.
+//
+// Defaults on this experimental branch:
+//   GA_SMOOTH_LAMBDA = 1e-4    smoothness regulariser strength
+//   GA_SMOOTH_L1     = undef   quadratic (L2) penalty on log10(Ne)
+//                              jumps. The 19-sim sweep at full
+//                              strength (sweep_out/summary.tsv) shows
+//                              L2 generalises best: lowest mean RMSE,
+//                              smallest worst-case, most wins, and
+//                              detects more bottleneck features than
+//                              L1 — including BOT4 where L1 blunts
+//                              the dip.
+//   GA_BIN_WEIGHTED  = on      residuals weighted by per-bin SNP-
+//                              pair count
+//
+// Build with -DGA_SMOOTH_L1=1 to use L1 (total-variation) instead.
+// Build with -DGA_SMOOTH_CUTOFF=<float> for a truncated quadratic.
+// See docs/superpowers/specs/2026-05-13-ga-loss-tweaks.md and
+// 2026-05-13-ga-smooth-shape.md for the supporting sweep.
+#ifndef GA_SMOOTH_LAMBDA
+#define GA_SMOOTH_LAMBDA 0.0001
+#endif
+#ifndef GA_BIN_WEIGHTED
+#define GA_BIN_WEIGHTED 1
+#endif
+
 inline double powah(double base, int exponent) {
   double result = 1;
   while (exponent > 0) {
@@ -68,6 +96,70 @@ static double CalculaSCImpl(Bicho* bicho, GsampleInfo* sampleInfo,
   const bool mix      = sampleInfo->mix;
 
   double score = 0;
+
+  // Smoothness regularisation: penalise log10(Ne) jumps between
+  // adjacent segments. Three penalty shapes are available; the choice
+  // is read at runtime from sampleInfo->gaConfig so a single binary
+  // can sweep L1, L2, and truncated in sequence (gone-ncurses_combo).
+  // Non-combo builds initialise gaConfig from the compile-time
+  // -DGA_* macros and behave bit-identically to the previous code
+  // path. Setting smoothLambda to 0 disables the term.
+  {
+    const GAConfig& cfg = sampleInfo->gaConfig;
+    if (cfg.smoothLambda > 0.0) {
+      double smooth = 0;
+      const double truncSq = cfg.smoothCutoff * cfg.smoothCutoff;
+      for (int i = 1; i < nsegmentos; ++i) {
+        const double a = std::max(bicho->NeBl[i - 1], MIN_NE_SIZE);
+        const double b = std::max(bicho->NeBl[i],     MIN_NE_SIZE);
+        const double d = std::log10(b) - std::log10(a);
+        switch (cfg.smoothKind) {
+          case GASmoothKind::L1:
+            smooth += std::fabs(d);
+            break;
+          case GASmoothKind::Truncated: {
+            const double dSq = d * d;
+            smooth += (dSq < truncSq) ? dSq : truncSq;
+            break;
+          }
+          case GASmoothKind::Quadratic:
+          default:
+            smooth += d * d;
+            break;
+        }
+      }
+      score += cfg.smoothLambda * smooth;
+    }
+  }
+
+  // Heterozygosity anchor: softly pull the ancient plateau (Necons,
+  // the deepest segment's Ne) toward the mutation-drift-balance
+  // target the user supplied via -m. Disabled when either field is
+  // zero. Penalty is on log10 distance so the term has comparable
+  // magnitude to the smoothness term at all Ne scales.
+  {
+    const GAConfig& cfg = sampleInfo->gaConfig;
+    if (cfg.anchorLambda > 0.0 && cfg.anchorNeHaploid > 0.0) {
+      const double Necons_safe = std::max(Necons, MIN_NE_SIZE);
+      const double dlog = std::log10(Necons_safe) -
+                          std::log10(cfg.anchorNeHaploid);
+      score += cfg.anchorLambda * dlog * dlog;
+    }
+  }
+
+#ifdef GA_BIN_WEIGHTED
+  // Average nBin so the weighted score keeps the same magnitude as
+  // the unweighted residual sum — bins with above-average pair
+  // counts dominate, bins with very few pairs (large variance) are
+  // down-weighted.
+  double sumNBinAll = 0;
+  for (int ii = 0; ii < sampleInfo->nBins; ++ii) {
+    sumNBinAll += sampleInfo->nBin[ii];
+  }
+  const double invMeanNBin =
+      (sumNBinAll > 0) ? (sampleInfo->nBins / sumNBinAll) : 1.0;
+#endif
+
   for (int ii = 0; ii < sampleInfo->nBins; ++ii) {
     const double cv = sampleInfo->oneMinuscValSq[ii];
     double p1a = 1, p1b = 1, r1a = 1, s1 = 0;
@@ -150,7 +242,12 @@ static double CalculaSCImpl(Bicho* bicho, GsampleInfo* sampleInfo,
     }
 
     const double residual = sampleInfo->d2cObs[ii] - pred;
+#ifdef GA_BIN_WEIGHTED
+    const double binWeight = sampleInfo->nBin[ii] * invMeanNBin;
+    score += binWeight * Square<double>(residual);
+#else
     score += Square<double>(residual);
+#endif
     if (d2cPred == nullptr && score > cutoff) {
       return cutoff;
     }

@@ -95,13 +95,16 @@ class ProgressStatus {
   void SetStatusDetail(const std::string& detail);
   void SetNeSnapshot(const std::vector<double>& values,
                      const std::string& unitLabel);
-  // Replace the optional reference Ne curve overlaid in red by the
-  // ncurses TUI. The plain (non-ncurses) build silently ignores it.
   void SetReferenceNe(const std::vector<double>& values);
   // Report the best SCval seen so far. `completed` is the count of
   // GA rounds that have produced a score; `total` is the configured
   // GONE_ROUNDS so the TUI can render "round N of M".
   void SetBestScore(double score, int completed, int total);
+  // Clear the running minimum so the next SetBestScore call sets the
+  // initial value (instead of being clamped to a stale lower bound
+  // from an earlier pass). Combo mode resets between algorithm
+  // passes so the score box reflects only the current pass.
+  void ResetBestScore();
   // Mix-mode variant: the score-box rectangle gets `title` + a value
   // line + `subtitle`, no round counter. Used to expose the refining
   // partial-Fst estimate in -x mode where there's no GA.

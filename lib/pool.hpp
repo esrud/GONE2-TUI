@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <string>
 #include "./bicho.hpp"
+#include "./ga_config.hpp"
 
 typedef struct {
   int gmax[3];
@@ -28,6 +29,12 @@ typedef struct {
   MutParams mutParams;
   int numGenerations;
   int numChildren;
+  // Runtime knob consulted by MutateNeRnd. Set by Run() per
+  // generation under GA_TWO_STAGE, or constant under GA_HEAVY_TAIL.
+  bool heavyTailActive;
+  // Kick / scout knobs read by MutateNeRnd and Run. Initialised
+  // from the compile-time -DGA_* defaults in libgone.cpp.
+  GAConfig gaConfig;
 } Pool;
 
 void SetInitialPoolParameters(Pool* pool, double mincval);

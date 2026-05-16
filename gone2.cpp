@@ -21,6 +21,7 @@
 #include "lib/sample.hpp"
 #include "lib/libgone.hpp"
 #include "lib/ne_ref.hpp"
+#include "lib/kinship.hpp"
 
 #ifdef GONE_NCURSES_TUI
 #include "lib/ncurses_tui.hpp"
@@ -158,6 +159,17 @@ int main(int argc, char * argv[]) {
 
   params.progress.SetCurrentTask(1, "Preparing sample");
   params.progress.InitCurrentTask(4);
+
+  // -k: drop individuals more related than the user-chosen KING-robust
+  // φ threshold before any sample stats are computed. No-op when the
+  // threshold is 0 (default). Runs early so the surviving sample sees
+  // a clean shuffle and downstream allele-frequency / heterozygosity
+  // calculations.
+  if (params.kinshipThreshold > 0.0) {
+    FilterRelatedIndividuals(popInfo, params.kinshipThreshold,
+                             &params.progress);
+  }
+
   params.progress.SetStatusDetail("Shuffling loci and individuals");
   params.progress.SaveProgress();
 

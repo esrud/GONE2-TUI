@@ -4,6 +4,8 @@
 
 #include "libgone.hpp"
 
+#include <algorithm>
+#include <limits>
 #include <vector>
 
 void gone(AppParams *params, std::string fichero, int argc, char *argv[],
@@ -30,6 +32,31 @@ void gone(AppParams *params, std::string fichero, int argc, char *argv[],
   sampleInfo->hetEsp    = popInfo->hetEsp;
   sampleInfo->hetAvgAll = popInfo->hetAvgAll;
   sampleInfo->hetAvg    = popInfo->hetAvg;
+  // Defaults read at compile time from -DGA_* flags; the combo path
+  // (gone-ncurses_combo) overrides this between successive GA passes.
+  sampleInfo->gaConfig  = MakeDefaultGAConfig();
+
+  // -m: heterozygosity anchor. With per-site mutation rate μ and
+  // genome-wide expected heterozygosity H = E[2pq] averaged over ALL
+  // sites (segregating + invariant), mutation-drift balance gives
+  // E[H] = θ/(1+θ) ≈ θ for small θ, where θ = 4·Ne_diploid·μ. We
+  // anchor Necons (haploid units, = 2·Ne_diploid) toward
+  // H/(2μ). The anchor is a soft squared-log penalty so an order-
+  // of-magnitude mismatch in μ shifts the deep-end estimate but
+  // doesn't lock it. Skipped for haploid data (haplotype == 1) where
+  // 2pq isn't the right summary statistic.
+  if (params->mutationRate > 0.0 && params->haplotype != 1 &&
+      sampleInfo->hetEspAll > 0.0) {
+    const double Ne_haploid_anchor =
+        sampleInfo->hetEspAll / (2.0 * params->mutationRate);
+    sampleInfo->gaConfig.anchorNeHaploid = Ne_haploid_anchor;
+    sampleInfo->gaConfig.anchorLambda    = 1e-4;
+    std::cerr << " Heterozygosity anchor: H=" << sampleInfo->hetEspAll
+              << " μ=" << params->mutationRate
+              << " → Ne_diploid≈" << Ne_haploid_anchor / 2.0
+              << " (soft penalty λ=" << sampleInfo->gaConfig.anchorLambda
+              << ")\n";
+  }
 
   if (params->basecallerror == 0) {
     sampleInfo->basecallcorrec = 1;
@@ -96,6 +123,7 @@ void gone(AppParams *params, std::string fichero, int argc, char *argv[],
   if (!params->mix) {
     Pool *pool = new Pool();
     SetInitialPoolParameters(pool, sampleInfo->cValMin);
+    pool->gaConfig = sampleInfo->gaConfig;
     PrePopulatePool(pool, sampleInfo);
 
     if ((sampleInfo->flags & FLAG_DEBUG) > 0) {
@@ -108,8 +136,35 @@ void gone(AppParams *params, std::string fichero, int argc, char *argv[],
       salida.close();
     }
 
+    // Configs to run. Non-combo builds run a single pass with the
+    // compile-time-derived config already in sampleInfo->gaConfig
+    // (so behaviour matches the pre-runtime-config code exactly).
+    // The combo target tries trunc05_kick, L2, and L1+kicks in turn
+    // and keeps the one whose averaged predicted d² fits best.
+    std::vector<GAConfig> configs;
+#ifdef GONE_COMBO
+    configs.push_back(MakeComboTruncKickConfig());
+    configs.push_back(MakeComboL2Config());
+    configs.push_back(MakeComboL1KickConfig());
+    // The heterozygosity anchor (if any) applies equally to all
+    // three passes — we want the same deep-end target regardless of
+    // which smoothness penalty is on.
+    for (GAConfig& c : configs) {
+      c.anchorNeHaploid = sampleInfo->gaConfig.anchorNeHaploid;
+      c.anchorLambda    = sampleInfo->gaConfig.anchorLambda;
+    }
+#else
+    configs.push_back(sampleInfo->gaConfig);
+#endif
+
     double avgD2Pred[kNumLinMax] = {};
     double avgNe[MAXBINS] = {};
+    // Best-so-far across passes (only one pass in non-combo builds).
+    double bestAvgD2Pred[kNumLinMax] = {};
+    double bestAvgNe[MAXBINS] = {};
+    int    bestGmax2 = 0;
+    double bestResidual = std::numeric_limits<double>::infinity();
+    std::string bestLabel;
 
     static const Pool emptyPool = Pool();
     int numThreads = params->numThreads;
@@ -130,13 +185,53 @@ void gone(AppParams *params, std::string fichero, int argc, char *argv[],
       tavgNe[z]     = new double[kNumGenMax]{};
       std::fill_n(tavgNe[z], kNumGenMax, 1.0);
     }
-    params->progress.InitCurrentTask(static_cast<float>(GONE_ROUNDS));
+    params->progress.InitCurrentTask(
+        static_cast<float>(GONE_ROUNDS * configs.size()));
     std::vector<double> liveLogNe(MAXBINS, 0.0);
     std::vector<int> liveNeCounts(MAXBINS, 0);
     int completedRounds = 0;
     int liveMaxConta = 0;
     const std::string neUnitLabel =
         params->haplotype == 1 ? "Ne_haploids" : "Ne_diploids";
+
+    for (size_t passIdx = 0; passIdx < configs.size(); ++passIdx) {
+      const GAConfig& cfg = configs[passIdx];
+      sampleInfo->gaConfig = cfg;
+      // Reseed the global RNG at the start of every pass so each pass
+      // sees the same random sequence as its standalone binary would.
+      // Without this, pass 2 / pass 3 inherit whatever state pass 1
+      // left, the GAs land in different basins than the individual
+      // builds, and the curves pick up the "sudden jumps" the user
+      // reported.
+      xprng.setSeed(params->semilla);
+      // Reset per-pass accumulators so the GA starts fresh under
+      // this config.
+      std::fill_n(avgD2Pred, kNumLinMax, 0.0);
+      std::fill_n(avgNe, MAXBINS, 0.0);
+      for (int z = 0; z < numThreads; ++z) {
+        std::fill_n(tavgD2Pred[z], kNumLinMax, 0.0);
+        std::fill_n(tavgNe[z], kNumGenMax, 1.0);
+        maxNeConta[z] = 0;
+      }
+      std::fill(liveLogNe.begin(), liveLogNe.end(), 0.0);
+      std::fill(liveNeCounts.begin(), liveNeCounts.end(), 0);
+      int passCompleted = 0;
+      liveMaxConta = 0;
+      // The score box still tracks the per-round running min of the
+      // un-penalized bin-weighted d² residual (no smoothness term, so
+      // values stay comparable across algorithms during the live run).
+      // The combo picker, by contrast, uses the residual of each
+      // pass's averaged Ne curve — computed once after the round
+      // loop — so the chosen pass matches what gets written to
+      // _GONE2_Ne. See the block below the parallel section.
+      double passBestResidual = std::numeric_limits<double>::infinity();
+      params->progress.ResetBestScore();
+      const std::string passPrefix =
+          configs.size() > 1
+              ? "[" + std::to_string(passIdx + 1) + "/" +
+                std::to_string(configs.size()) + " " +
+                std::string(cfg.label) + "] "
+              : std::string();
 
 #pragma omp parallel
     {
@@ -146,6 +241,12 @@ void gone(AppParams *params, std::string fichero, int argc, char *argv[],
       for (int _i = tid; _i < GONE_ROUNDS; _i += numThreads) {
         *privpool = emptyPool;
         SetInitialPoolParameters(privpool, sampleInfo->cValMin);
+        // SetInitialPoolParameters resets pool->gaConfig to the
+        // compile-time defaults; in the combo build that wipes the
+        // per-pass kick/scout values we just put on sampleInfo. Copy
+        // them back so MutateNeRnd / Run actually see this pass's
+        // configuration rather than the baseline.
+        privpool->gaConfig = sampleInfo->gaConfig;
         PrePopulatePool(privpool, sampleInfo);
         if ((sampleInfo->flags & FLAG_DEBUG) > 0) {
           RunDbg(privpool, sampleInfo, fichsal);
@@ -159,6 +260,36 @@ void gone(AppParams *params, std::string fichero, int argc, char *argv[],
         for (int i = 0; i < sampleInfo->nBins; ++i) {
           tavgD2Pred[tid][i] += bestD2Pred[i] / GONE_ROUNDS;
         }
+
+#ifdef GA_LOG_ROUNDS
+        // Append one line to fichsal + "_GA_rounds.csv":
+        //   round,scval,nSeg,ne_at_gen1,ne_at_gen10,ne_at_gen100
+        {
+          const std::string fichRounds = fichsal + "_GA_rounds.csv";
+#pragma omp critical(ga_log_rounds)
+          {
+            static bool headerWritten = false;
+            std::ofstream out(fichRounds, std::ios::app);
+            if (!headerWritten) {
+              out << "round,scval,nSeg,ne_gen1,ne_gen10,ne_gen100\n";
+              headerWritten = true;
+            }
+            // Look up Ne at three sentinel generations from the best
+            // bicho's piecewise-constant schedule.
+            auto neAtGen = [&](int gen) -> double {
+              int seg = 0;
+              while (seg < bestBicho->nSeg &&
+                     bestBicho->segBl[seg + 1] <= gen) ++seg;
+              if (seg >= bestBicho->nSeg) seg = bestBicho->nSeg - 1;
+              const double scale = params->haplotype == 1 ? 1.0 : 0.5;
+              return std::max(MIN_NE_SIZE, bestBicho->NeBl[seg] * scale);
+            };
+            out << (_i + 1) << "," << bestBicho->SCval << ","
+                << bestBicho->nSeg << "," << neAtGen(1) << ","
+                << neAtGen(10) << "," << neAtGen(100) << "\n";
+          }
+        }
+#endif
 
         // Count of generations spanned by the best bicho's segments.
         int conta = 0;
@@ -202,6 +333,7 @@ void gone(AppParams *params, std::string fichero, int argc, char *argv[],
 #pragma omp critical(gone_progress_update)
         {
           ++completedRounds;
+          ++passCompleted;
           liveMaxConta = std::max(liveMaxConta, conta2);
           for (int i = 0; i < conta2; ++i) {
             liveLogNe[i] += std::log(roundNe[i]);
@@ -213,11 +345,31 @@ void gone(AppParams *params, std::string fichero, int argc, char *argv[],
               liveNe[i] = std::exp(liveLogNe[i] / liveNeCounts[i]);
             }
           }
+          // Bin-weighted d² residual for THIS round's best bicho,
+          // with the smoothness penalty stripped (the score box
+          // would otherwise be incomparable across passes that use
+          // different penalties).
+          double roundRes = 0.0, roundN = 0.0;
+          for (int i = 0; i < sampleInfo->nBins; ++i) {
+            if (sampleInfo->cVal[i] != 0) {
+              const double d = sampleInfo->d2cObs[i] - bestD2Pred[i];
+              roundRes += sampleInfo->nBin[i] * d * d;
+              roundN   += sampleInfo->nBin[i];
+            }
+          }
+          const double roundScore =
+              roundN > 0
+                  ? roundRes / roundN
+                  : std::numeric_limits<double>::infinity();
+          if (roundScore < passBestResidual) {
+            passBestResidual = roundScore;
+          }
           params->progress.SetStatusDetail(
-              "Completed GA round " + std::to_string(completedRounds) +
-              " of " + std::to_string(GONE_ROUNDS));
+              passPrefix + "Completed GA round " +
+              std::to_string(passCompleted) + " of " +
+              std::to_string(GONE_ROUNDS));
           params->progress.SetNeSnapshot(liveNe, neUnitLabel);
-          params->progress.SetBestScore(bestBicho->SCval, completedRounds,
+          params->progress.SetBestScore(roundScore, passCompleted,
                                         GONE_ROUNDS);
           params->progress.SetTaskProgress(
               static_cast<float>(completedRounds));
@@ -226,7 +378,7 @@ void gone(AppParams *params, std::string fichero, int argc, char *argv[],
       delete privpool;
     }
 
-    // Reduction across threads.
+    // Reduction across threads for this pass.
     std::fill_n(avgNe, MAXBINS, 1.0);
     for (int nt = 0; nt < numThreads; ++nt) {
       for (int i = 0; i < maxNeConta[nt]; ++i) {
@@ -235,6 +387,57 @@ void gone(AppParams *params, std::string fichero, int argc, char *argv[],
       for (int i = 0; i < sampleInfo->nBins; ++i) {
         avgD2Pred[i] += tavgD2Pred[nt][i];
       }
+    }
+
+    // Score this pass by the residual of the averaged Ne curve's
+    // own d² prediction — the curve that will be saved to
+    // _GONE2_Ne. Build a synthetic Bicho with one segment per
+    // generation from avgNe[] (diploid units → ×2 to haploid for
+    // Bicho::NeBl), then call CalculaSC to get its predicted d².
+    // This replaces the older running-min-of-per-round-residuals
+    // criterion, which could pick a pass whose averaged curve fit
+    // worse than another's (the per-round best was a lucky outlier).
+    {
+      int curveLen = 0;
+      for (int nt = 0; nt < numThreads; ++nt) {
+        if (maxNeConta[nt] > curveLen) curveLen = maxNeConta[nt];
+      }
+      const int maxSeg = std::min(curveLen, kNumLinMax - 1);
+      if (maxSeg >= 1) {
+        Bicho synth = {};
+        synth.nSeg = maxSeg;
+        for (int i = 0; i < maxSeg; ++i) {
+          synth.segBl[i] = i;
+          synth.NeBl[i] = std::max(MIN_NE_SIZE, avgNe[i] * 2.0);
+        }
+        synth.segBl[maxSeg] = maxSeg;
+        synth.efval = sampleInfo->fVal;
+        double predD2[kMaxD2PredBins] = {};
+        CalculaSC(&synth, sampleInfo, predD2);
+        double res = 0.0, n = 0.0;
+        for (int i = 0; i < sampleInfo->nBins; ++i) {
+          if (sampleInfo->cVal[i] != 0) {
+            const double d = sampleInfo->d2cObs[i] - predD2[i];
+            res += sampleInfo->nBin[i] * d * d;
+            n   += sampleInfo->nBin[i];
+          }
+        }
+        passBestResidual =
+            (n > 0) ? res / n : std::numeric_limits<double>::infinity();
+      }
+    }
+
+    if (passBestResidual < bestResidual) {
+      bestResidual = passBestResidual;
+      bestLabel    = cfg.label ? cfg.label : "";
+      bestGmax2    = pool->poolParams.gmax[2];
+      std::copy(avgNe, avgNe + MAXBINS, bestAvgNe);
+      std::copy(avgD2Pred, avgD2Pred + kNumLinMax, bestAvgD2Pred);
+    }
+    }  // end for passIdx
+
+    // Free per-thread accumulators after all passes are done.
+    for (int nt = 0; nt < numThreads; ++nt) {
       delete[] tavgNe[nt];
       delete[] tavgD2Pred[nt];
     }
@@ -242,33 +445,57 @@ void gone(AppParams *params, std::string fichero, int argc, char *argv[],
     delete[] tavgD2Pred;
     delete[] maxNeConta;
 
-    // Write the Ne output. Internal Ne is haploid; we divide by 2 to
-    // report diploid Ne (except for the haploid case which multiplies
-    // back by 2 here).
+    // Push the winning curve to the TUI so the user sees the chosen
+    // result after the program finishes. In non-combo builds this is
+    // a no-op (the last in-loop snapshot already carries the same
+    // values); in combo it might roll back from a later, worse pass.
+    // The score box also rolls back to the winning pass's residual
+    // so the displayed number matches the kept solution rather than
+    // sitting at whatever the last-running pass produced.
+    if (configs.size() > 1) {
+      std::vector<double> finalNe(bestGmax2 + 1, MIN_NE_SIZE);
+      for (int i = 0; i <= bestGmax2 && i < kNumGenMax; ++i) {
+        const double scale = params->haplotype == 1 ? 2.0 : 1.0;
+        finalNe[i] = std::max(MIN_NE_SIZE, bestAvgNe[i] * scale);
+      }
+      params->progress.SetNeSnapshot(finalNe, neUnitLabel);
+      params->progress.SetStatusDetail(
+          "Best fit: " + bestLabel +
+          " (bin-weighted d² residual " + std::to_string(bestResidual) + ")");
+      params->progress.SetBestScoreLabeled(
+          bestResidual, "Best fit", "kept: " + bestLabel);
+      std::cerr << " Combo kept: " << bestLabel
+                << " (bin-weighted d² residual "
+                << std::to_string(bestResidual) << ")\n";
+    }
+
+    // Write the Ne output of the WINNING pass. Internal Ne is haploid;
+    // we divide by 2 to report diploid Ne (except for the haploid case
+    // which multiplies back by 2 here).
     salida.open(fichero_sal_NeH, std::ios::out);
     if (params->haplotype == 1) {
       salida << "Generation\tNe_haploids\n";
-      for (int j = 0; j < pool->poolParams.gmax[2] + 1; ++j) {
+      for (int j = 0; j < bestGmax2 + 1; ++j) {
         const int generacion = j + 1;
         if (generacion < 151) {
-          avgNe[j] *= 2;
-          salida << generacion << "\t" << std::max(avgNe[j], MIN_NE_SIZE)
+          bestAvgNe[j] *= 2;
+          salida << generacion << "\t" << std::max(bestAvgNe[j], MIN_NE_SIZE)
                  << "\n";
         }
       }
     } else {
       salida << "Generation\tNe_diploids\n";
-      for (int j = 0; j < pool->poolParams.gmax[2] + 1; ++j) {
+      for (int j = 0; j < bestGmax2 + 1; ++j) {
         const int generacion = j + 1;
         if (generacion < 151) {
-          salida << generacion << "\t" << std::max(avgNe[j], MIN_NE_SIZE)
+          salida << generacion << "\t" << std::max(bestAvgNe[j], MIN_NE_SIZE)
                  << "\n";
         }
       }
     }
     salida.close();
 
-    // Write d² (observed vs predicted) per bin.
+    // Write d² (observed vs winning-pass predicted) per bin.
     salida.open(fichero_sal_d2, std::ios::out);
     salida << "c_bin\tnumber_of_SNP_pairs\tObserved_d2\tPredicted_d2\n";
     for (int i = 0; i < linesRead; ++i) {
@@ -277,7 +504,7 @@ void gone(AppParams *params, std::string fichero, int argc, char *argv[],
                << "\t" << std::fixed << std::setprecision(0)
                << sampleInfo->nBin[i] << "\t" << std::fixed
                << std::setprecision(8) << sampleInfo->d2cObs[i] << "\t"
-               << avgD2Pred[i] << "\n";
+               << bestAvgD2Pred[i] << "\n";
       }
     }
     salida.close();

@@ -37,9 +37,26 @@ gone: info
 tui: info
 	$(CC) $(COMMON_FLAGS) $(CFLAGS) -DGONE_TUI -o $(TUI_OFNAME) $(SOURCES)
 
+# Default ncurses build: combo runtime. Reads the input and computes
+# d² exactly once, then runs the Ne-estimation GA three times — once
+# per algorithm (trunc05_kick, L2, L1+kicks) — switching the
+# smoothness penalty and kick schedule at runtime between passes.
+# The TUI status line shows the current pass label; once all three
+# finish the binary keeps whichever pass produced the lowest
+# bin-weighted d² residual, pushes its Ne curve back to the chart,
+# and writes _GONE2_Ne / _GONE2_d2 from that winning pass.
+#
+# Mutation rates use the original empirical defaults
+# (frecMut=0.3, efectoMut=0.3). The 3×3 sweep on data/simus (May
+# 2026) found these near-optimal at full strength; a static
+# frecMut=0.5 and a Rechenberg 1/5 self-adapting efectoMut both
+# improved fast-preset RMSE by 5–7 % but the gap closed at full
+# strength, so neither replaced the defaults.
+# (GA_FREC_MUT / GA_EFECTO_MUT / GA_FREC_MUT_LATERAL remain
+# overridable from the command line for future sweeps.)
 gone-ncurses: info
-	$(CC) $(COMMON_FLAGS) $(CFLAGS) -DGONE_NCURSES_TUI -o $(NCURSES_OFNAME) \
-	    $(SOURCES) $(NCURSES_LIBS)
+	$(CC) $(COMMON_FLAGS) $(CFLAGS) -DGONE_NCURSES_TUI -DGONE_COMBO \
+	    -o $(NCURSES_OFNAME) $(SOURCES) $(NCURSES_LIBS)
 
 fast: info
 	$(CC) $(COMMON_FLAGS) $(FASTFLAGS) -o $(OFNAME) $(SOURCES)

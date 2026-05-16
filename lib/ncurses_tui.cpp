@@ -440,8 +440,7 @@ void DrawNeChart(int top, int left, int height, int width,
 
   // Reference (ground-truth) Ne overlay — same sampling math against
   // its own pixel buffer, drawn FIRST in red so the live cyan curve
-  // overdraws on top where they coincide. Red shines through wherever
-  // the GA hasn't caught up to truth.
+  // overdraws on top where they coincide.
   if (!vRef.empty()) {
     std::vector<unsigned char> refCells(plotCols * plotRows, 0);
     const int N_ref = static_cast<int>(vRef.size());
@@ -483,6 +482,8 @@ void DrawNeChart(int top, int left, int height, int width,
       const int yMax = std::max({yL, yC, yR});
       for (int y = yMin; y <= yMax; ++y) setRefPix(xp, y);
     }
+    // Render reference in red (drawn first → live curve wins where
+    // they overlap, but red is visible where the GA hasn't caught up).
     Attr a(Color(CP_REFERENCE) | A_BOLD);
     char buf[4];
     for (int r = 0; r < plotRows; ++r) {
@@ -495,7 +496,7 @@ void DrawNeChart(int top, int left, int height, int width,
     }
   }
 
-  // Render braille cells (live GA curve in cyan, on top of reference).
+  // Render braille cells (live GA curve in cyan, on top).
   {
     Attr a(Color(CP_CURVE) | A_BOLD);
     char buf[4];
@@ -531,9 +532,13 @@ void DrawNeChart(int top, int left, int height, int width,
       mvaddstr(boxTop, boxLeft + 2, titleBar.c_str());
     }
     char vbuf[40];
-    // Custom-labelled values (mix mode's Fst) sit in [0,1] and read
-    // better as fixed-point; the GA's SCval is best as %.4g.
-    if (bestScore.title.empty()) {
+    // Pick the format from the value's magnitude rather than from the
+    // title: mix-mode Fst sits in [0, 1] and reads better as
+    // fixed-point, but combo's "Best fit" residual is ~1e-7 and would
+    // print as 0.0000 with %.4f. Anything below 0.01 (or absurdly
+    // large) drops into scientific notation.
+    const double absScore = std::fabs(bestScore.score);
+    if (absScore != 0 && (absScore < 0.01 || absScore >= 1e5)) {
       std::snprintf(vbuf, sizeof(vbuf), "%.4g", bestScore.score);
     } else {
       std::snprintf(vbuf, sizeof(vbuf), "%.4f", bestScore.score);

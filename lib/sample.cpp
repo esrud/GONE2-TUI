@@ -923,49 +923,6 @@ void CalculateD2ParallelFst(
   std::sort(valid_idx, valid_idx + sampleInfo->numSegLoci);
   // sampleInfo->numSNPs = 0;
   int repes=1;
-
-  // Bit-packed genotype path. Mirrors CalculateD2Parallel's
-  // useBitsetD2 branch: for haplotype != 3 each pair's d² accumulators
-  // reduce to popcounts on bit-packed (het / homAlt / called) sets,
-  // ~50× faster than the per-individual loop on dense diploid data.
-  // Haplotype 3 (low-coverage random-haploid) still needs the slow
-  // path because the genotype is resampled per pair via xprng — there's
-  // no static bit pattern to popcount over.
-  const bool useBitsetD2 = (sampleInfo->haplotype != 3);
-  const int bitWords = (sampleInfo->sampleSizeIndi + 63) / 64;
-  std::vector<uint64_t> hetBits;
-  std::vector<uint64_t> homAltBits;
-  std::vector<uint64_t> calledBits;
-  if (useBitsetD2) {
-    const size_t bitsetSize =
-        static_cast<size_t>(sampleInfo->numSegLoci) * bitWords;
-    hetBits.assign(bitsetSize, 0);
-    homAltBits.assign(bitsetSize, 0);
-    calledBits.assign(bitsetSize, 0);
-    for (int idx = 0; idx < sampleInfo->numSegLoci; ++idx) {
-      const int locus = valid_idx[idx];
-      const size_t baseOffset = static_cast<size_t>(idx) * bitWords;
-      for (int sampleIdx = 0; sampleIdx < sampleInfo->sampleSizeIndi;
-           ++sampleIdx) {
-        const int indi = sampleInfo->shuffledIndi[sampleIdx];
-        const uint8_t genotype = popInfo->indi[indi][locus];
-        const size_t wordOffset = baseOffset + sampleIdx / 64;
-        const uint64_t bit = uint64_t{1} << (sampleIdx & 63);
-        if (genotype == 1) {
-          hetBits[wordOffset] |= bit;
-          calledBits[wordOffset] |= bit;
-        } else if (genotype == 2) {
-          homAltBits[wordOffset] |= bit;
-          calledBits[wordOffset] |= bit;
-        } else if (genotype < 9) {
-          // genotype 0 — homozygous reference, called but neither het nor altHom.
-          calledBits[wordOffset] |= bit;
-        }
-        // genotype ≥ 9 → missing; leave all three bits clear.
-      }
-    }
-  }
-
   long int completedLoci = 0;
   #pragma omp parallel for private(D, W, D2, W2, bin, i, j, _i, genot1, genot2, locus1, locus2, tacuHoHo, tacuHoHetHetHo, tacuHetHet, pIndi, cenmor, contaIndX, frecI, frecJ, ss,_irepe) schedule(dynamic, 1000)
   for (i = 0; i < sampleInfo->numSegLoci - 1; ++i) {
@@ -996,116 +953,63 @@ void CalculateD2ParallelFst(
       if (bin>=0){
         // acumuladores de genotipos
         D2=W2=0;
-        contaIndX = 0;
-        if (useBitsetD2) {
-          long int contaIndXInt = 0;
-          long int frecIInt = 0;
-          long int frecJInt = 0;
-          long int tacuHoHoInt = 0;
-          long int tacuHoHetHetHoInt = 0;
-          long int tacuHetHetInt = 0;
-          const size_t offset1 = static_cast<size_t>(i) * bitWords;
-          const size_t offset2 = static_cast<size_t>(j) * bitWords;
-          for (int word = 0; word < bitWords; ++word) {
-            const uint64_t het1    = hetBits   [offset1 + word];
-            const uint64_t het2    = hetBits   [offset2 + word];
-            const uint64_t hom1    = homAltBits[offset1 + word];
-            const uint64_t hom2    = homAltBits[offset2 + word];
-            const uint64_t called1 = calledBits[offset1 + word];
-            const uint64_t called2 = calledBits[offset2 + word];
-            contaIndXInt += PopCount64(called1 & called2);
-            frecIInt += PopCount64(het1 & called2) +
-                        2 * PopCount64(hom1 & called2);
-            frecJInt += PopCount64(het2 & called1) +
-                        2 * PopCount64(hom2 & called1);
-            tacuHetHetInt += PopCount64(het1 & het2);
-            tacuHoHetHetHoInt += PopCount64((hom1 & het2) | (het1 & hom2));
-            tacuHoHoInt += PopCount64(hom1 & hom2);
-          }
-          threadExpNCounter += sampleInfo->sampleSizeIndi;
-          contaIndX = static_cast<double>(contaIndXInt);
-          // Match the slow path's behaviour when contaIndX==0: pair
-          // is still counted in tnxc with zero D²/W² contribution.
-          if (contaIndX > 0) {
-            frecI = static_cast<double>(frecIInt);
-            frecJ = static_cast<double>(frecJInt);
-            tacuHoHo = static_cast<double>(tacuHoHoInt);
-            tacuHoHetHetHo = static_cast<double>(tacuHoHetHetHoInt);
-            tacuHetHet = static_cast<double>(tacuHetHetInt);
-            frecI /= 2 * contaIndX;
-            frecJ /= 2 * contaIndX;
-            W = frecI * frecJ;
-            if (params->haplotype == 0){
-              D = -2.0 * W +
-                (2.0 * tacuHoHo + tacuHoHetHetHo + tacuHetHet / 2.0) / contaIndX;
-            }
-            else{
-              D = tacuHoHo / contaIndX - frecI * frecJ;
-            }
-            D *= D;
-            W *= (1.0 - frecI) * (1.0 - frecJ);
-            D2 = D;
-            W2 = W;
-          }
-        } else {
-          for (_irepe=0;_irepe<repes;++_irepe){
-            tacuHoHo = tacuHoHetHetHo = tacuHetHet = frecI = frecJ = 0;
-            pIndi = sampleInfo->shuffledIndi;
-            contaIndX = 0;
-            for (_i = 0; _i < sampleInfo->sampleSizeIndi; ++_i) {
-              genot1=popInfo->indi[*pIndi][locus1];
-              genot2=popInfo->indi[*pIndi][locus2];
-              if (sampleInfo->haplotype==3){  // Alternative for haplotype=3
-                if (genot1==1){
-                  if (xprng.uniforme01() > 0.5){
-                    genot1=0;
-                  }
-                  else{
-                    genot1=2;
-                  }
+        for (_irepe=0;_irepe<repes;++_irepe){
+          tacuHoHo = tacuHoHetHetHo = tacuHetHet = frecI = frecJ = 0;
+          pIndi = sampleInfo->shuffledIndi;
+          contaIndX = 0;
+          for (_i = 0; _i < sampleInfo->sampleSizeIndi; ++_i) {
+            genot1=popInfo->indi[*pIndi][locus1];
+            genot2=popInfo->indi[*pIndi][locus2];
+            if (sampleInfo->haplotype==3){  // Alternative for haplotype=3
+              if (genot1==1){
+                if (xprng.uniforme01() > 0.5){
+                  genot1=0;
                 }
-                if (genot2==1){
-                  if (xprng.uniforme01() > 0.5){
-                    genot2=0;
-                  }
-                  else{
-                    genot2=2;
-                  }
+                else{
+                  genot1=2;
                 }
               }
-              ss = genot1 + genot2;
-              if (_irepe==0){threadExpNCounter++;}
-              //++texpNData[tid];
-              cond = (ss < 9);
-              contaIndX += cond;
-              frecI += genot1 * cond;
-              frecJ += genot2 * cond;
-              tacuHetHet += (ss == 2) * (genot1 == 1);
-              tacuHoHetHetHo += (ss == 3);
-              tacuHoHo += (ss == 4); // Homo_no_ref and Homo_no_ref
-              ++pIndi;
+              if (genot2==1){
+                if (xprng.uniforme01() > 0.5){
+                  genot2=0;
+                }
+                else{
+                  genot2=2;
+                }
+              }
             }
-            if (contaIndX == 0) {
-              continue;
-            }
-            frecI /= 2 * contaIndX;
-            frecJ /= 2 * contaIndX;
-            W = frecI * frecJ;
-            if (params->haplotype == 0){
-              D = -2.0 * W +
-                (2.0 * tacuHoHo + tacuHoHetHetHo + tacuHetHet / 2.0) / contaIndX;
-            }
-            else{
-              D= tacuHoHo / contaIndX - frecI * frecJ;
-            }
-            D *= D;
-            W *= (1.0 - frecI) * (1.0 - frecJ);
-            D2+=D;
-            W2+=W;
+            ss = genot1 + genot2;
+            if (_irepe==0){threadExpNCounter++;}
+            //++texpNData[tid];
+            cond = (ss < 9);
+            contaIndX += cond;
+            frecI += genot1 * cond;
+            frecJ += genot2 * cond;
+            tacuHetHet += (ss == 2) * (genot1 == 1);
+            tacuHoHetHetHo += (ss == 3);
+            tacuHoHo += (ss == 4); // Homo_no_ref and Homo_no_ref
+            ++pIndi;
           }
-          D2/=repes;
-          W2/=repes;
+          if (contaIndX == 0) {
+            continue;
+          }
+          frecI /= 2 * contaIndX;
+          frecJ /= 2 * contaIndX;
+          W = frecI * frecJ;
+          if (params->haplotype == 0){
+            D = -2.0 * W +
+              (2.0 * tacuHoHo + tacuHoHetHetHo + tacuHetHet / 2.0) / contaIndX;
+          }
+          else{
+            D= tacuHoHo / contaIndX - frecI * frecJ;
+          }
+          D *= D;
+          W *= (1.0 - frecI) * (1.0 - frecJ);
+          D2+=D;
+          W2+=W;
         }
+        D2/=repes;
+        W2/=repes;
 
         threadEffNCounter += contaIndX;
         tnxc[tid][bin] += 1;

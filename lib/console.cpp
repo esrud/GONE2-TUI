@@ -52,6 +52,16 @@ void printHelp(char* appName) {
     "           per-generation Gen/Ne table). The ncurses TUI build\n"
     "           overlays this curve in red so estimates can be eyeballed\n"
     "           against ground truth.\n"
+    "    -k     KING-robust kinship threshold for related-individual\n"
+    "           filtering. 0 (default) disables. Typical values:\n"
+    "             0.0884 — drop 2nd-degree+ relatives (half-sibs etc.)\n"
+    "             0.0442 — drop 3rd-degree+ (first cousins etc.)\n"
+    "           Useful for broodstock / hatchery panels where within-\n"
+    "           panel relatedness biases recent-Ne estimates down.\n"
+    "    -w     Per-site per-generation mutation rate (e.g. 1e-8 for\n"
+    "           vertebrates). Enables a soft heterozygosity anchor that\n"
+    "           pulls the ancient Ne plateau toward H/(4μ) under\n"
+    "           mutation-drift balance. 0 (default) disables.\n"
     "\n"
     "EXAMPLES:\n"
     "    - Analysis of high quality diploid unphased data in \"file.ped\" (PLINK\n"
@@ -84,7 +94,7 @@ void printHelp(char* appName) {
 void HandleInput(int argc, char * argv[], AppParams* params) {
   SetDefaultParameters(params);
   for (;;) {
-    switch (getopt(argc, argv, "hxg:b:n:i:s:l:u:er:M:t:qpvS:b:zvo:f:")) {
+    switch (getopt(argc, argv, "hxg:b:n:i:s:l:u:er:M:t:qpvS:b:zvo:f:k:w:")) {
       case '?':
       case 'h':
       default:
@@ -177,6 +187,31 @@ void HandleInput(int argc, char * argv[], AppParams* params) {
         // Reference Ne history (true / params file) for TUI overlay.
         params->realNeFile = optarg;
         continue;
+      case 'k':
+        // Drop individuals above this KING-robust kinship threshold
+        // before computing d². Useful for broodstock / hatchery
+        // panels where the sample's apparent recent Ne is biased
+        // down by within-panel relatedness.
+        params->kinshipThreshold = std::atof(optarg);
+        if (params->kinshipThreshold < 0 ||
+            params->kinshipThreshold > 0.5) {
+          std::cerr << "Invalid kinship threshold (-k). Use a value "
+                       "in (0, 0.5]. Common cutoffs: 0.0884 (2nd-degree+), "
+                       "0.0442 (3rd-degree+)." << std::endl;
+          exit(EXIT_FAILURE);
+        }
+        continue;
+      case 'w':
+        // Per-site per-generation mutation rate. Enables a soft
+        // heterozygosity anchor on the ancient end of the Ne curve.
+        params->mutationRate = std::atof(optarg);
+        if (params->mutationRate < 0 || params->mutationRate > 1e-3) {
+          std::cerr << "Invalid mutation rate (-w). Use a positive value "
+                       "below 1e-3. Typical: ~1e-8 for vertebrates."
+                    << std::endl;
+          exit(EXIT_FAILURE);
+        }
+        continue;
       case 'S':
         params->semilla = std::atoi(optarg);
         continue;
@@ -263,6 +298,8 @@ void SetDefaultParameters(AppParams* params) {
   params->nbins = 50;
   params->sizeBins = 1;
   params ->hayrecentbins = false;
+  params->kinshipThreshold = 0.0;  // -k: filter off by default
+  params->mutationRate = 0.0;       // -m: H-anchor off by default
   // progress is default-constructed with the rest of AppParams; it
   // can't be reassigned now that ProgressStatus owns a mutex.
 }
