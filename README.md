@@ -45,7 +45,7 @@ library. On Debian-like distributions:
 sudo apt install libncursesw5-dev
 ```
 # Installation
-It is recommended that you compile the source code, since it will most likely be faster. However we also provide a precompiled version
+It is recommended that you compile the source code, since it will most likely be faster.
 ## Pre-built version
 You can download it from the releases section of this repo.
 ## Compiling
