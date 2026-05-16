@@ -16,7 +16,7 @@ make gone-ncurses
 
 Switch back to the upstream-compatible code with `git checkout master`.
 
-## Main differences vs `master`
+## Main differences vs `main`
 
 - **Genetic algorithm**: the experimental branch runs three GA configurations
   in sequence (truncated quadratic + heavy kicks, L2, L1 + heavy kicks) inside
