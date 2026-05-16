@@ -131,6 +131,31 @@ OPTIONS:
            per-generation Gen/Ne table). The ncurses TUI build
            overlays this curve in red so estimates can be eyeballed
            against ground truth.
+
+EXAMPLES:
+    - Analysis of high quality diploid unphased data in "file.ped" (PLINK
+      format) assumes a constant recombination rate of 1.1 cM per Mb across
+      the genome (no need for a detailed genetic map within the .map file).
+      16 threads will be used:
+          ./gone2 -r 1.1 -t 16 file.ped
+    - A subsample of 10000 SNPs of the individuals in "file.ped" assuming
+      assuming that they were randomly sampled from a metapopulation composed
+      of two subpopulations:
+          ./gone2 -x -s 100000 file.ped
+    - Analysis of diploid high quality phased data in "file.vcf" (format vcf).
+      assumes that the genetic locations of the SNPs are given in the
+      "file.map" file (PLINK format) available in the same directory:
+          ./gone2 -g 2 file.vcf
+    - Analysis of diploid high quality phased data in "file.vcf" (format vcf).
+      assumes a constant recombination rate of 1.1 cM per Mb across the genome:
+          ./gone2 -g 2 -r 1.1 file.vcf
+    - Analysis of diploid high quality unphased data in a .tped file,
+      performed on a radom subset of 50 individuals and 100,000 SNPs.
+          ./gone2 -i 50 -s 10000 file.tped
+    - Analysis of low quality unphased data in a .tped file containing the
+      locations on a genetic map. Low-coverage (no need to specify depth) and
+      a genotyping error rate of 0.001 across genomes are assumed.
+          ./gone2 -g 3 -b 0.001 file.tped
 ```
 
 ### Reference Ne-history file formats (`-f`)
@@ -165,38 +190,3 @@ per generation:
 ```
 The block above describes: 20 000 generations at Ne=1 000 (equilibrium),
 10 000 at Ne=1 000, 25 at Ne=100 (a bottleneck), then 10 at Ne=1 000.
-
-```
-
-EXAMPLES:
-    - Analysis of high quality diploid unphased data in "file.ped" (PLINK
-      format) assumes a constant recombination rate of 1.1 cM per Mb across
-      the genome (no need for a detailed genetic map within the .map file).
-      16 threads will be used:
-          ./gone2 -r 1.1 -t 16 file.ped
-    - A subsample of 10000 SNPs of the individuals in "file.ped" assuming
-      assuming that they were randomly sampled from a metapopulation composed
-      of two subpopulations:
-          ./gone2 -x -s 100000 file.ped
-    - Analysis of diploid high quality phased data in "file.vcf" (format vcf).
-      assumes that the genetic locations of the SNPs are given in the
-      "file.map" file (PLINK format) available in the same directory:
-          ./gone2 -g 2 file.vcf
-    - Analysis of diploid high quality phased data in "file.vcf" (format vcf).
-      assumes a constant recombination rate of 1.1 cM per Mb across the genome:
-          ./gone2 -g 2 -r 1.1 file.vcf
-    - Analysis of diploid high quality unphased data in a .tped file,
-      performed on a radom subset of 50 individuals and 100,000 SNPs.
-          ./gone2 -i 50 -s 10000 file.tped
-    - Analysis of low quality unphased data in a .tped file containing the
-      locations on a genetic map. Low-coverage (no need to specify depth) and
-      a genotyping error rate of 0.001 across genomes are assumed.
-          ./gone2 -g 3 -b 0.001 file.tped
-```
-# Demo
-We have uploaded some sample data in the currentNe2 repo, which you can find [here](https://github.com/esrud/currentNe2)
-# Acknowledgements
-This study forms part of the I+D+i project PID2020-114426GB-C21 financed by MICIU/AEI/10.13039/501100011033 (Agencia Estatal de Investigación, Ministerio de Ciencia, Innovación y Universidades, Spain), and the Marine Science Programme (ThinkInAzul) supported by the Ministerio de Ciencia e Innovación and Xunta de Galicia with funding from the European Union NextGenerationEU (PRTR-C17.I1) and European Maritime and Fisheries Fund.
-
-# How to cite
-Santiago, E., Köpke, C. & Caballero, A. Accounting for population structure and data quality in demographic inference with linkage disequilibrium methods. Nat Commun 16, 6054 (2025). [https://doi.org/10.1038/s41467-025-61378-w](https://doi.org/10.1038/s41467-025-61378-w)
