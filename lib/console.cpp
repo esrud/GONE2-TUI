@@ -4,7 +4,7 @@
 void printHelp(char* appName) {
   fprintf(
     stderr,
-    "GONE2 - Genetic Optimization for Ne Esimation (v2.0 - Jan 2024)\n"
+    "GONE2 - Genetic Optimization for Ne Estimation (v2.0 - Jan 2024)\n"
     "Authors: Enrique Santiago - Carlos Köpke\n"
     "       This software estimates past demography from the distribution of LD\n"
     "       between pairs of SNP located at different distances on a genetic map.\n"
