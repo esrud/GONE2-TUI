@@ -1,7 +1,7 @@
 # Master vs experimental — visual comparison
 
 Side-by-side runs of the **master** (left) and **experimental**
-(`experiments/ga-exploration`, right) branches on the `data/simus/`
+(`experiments/ga-exploration`, right) branches on the simulation
 benchmarks. Each pair was produced by `gone-ncurses` with the
 `-f <truth>` overlay, so the same chart shows:
 
