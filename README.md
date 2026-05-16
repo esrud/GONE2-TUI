@@ -4,7 +4,7 @@ Demographic history from the observed spectrum of linkage disequilibrium
 ![GONE2 demo](docs/demo.gif)
 
 This repository is a fork of the original [esrud/GONE2](https://github.com/esrud/GONE2).
-To the best of our knowledge this fork's `master` branch produces the same
+To the best of our knowledge this fork's `main` branch produces the same
 results as the upstream version, but we have not run enough tests to confirm
 it across every input format and option combination. If you spot a difference,
 please open an [issue](../../issues) — a minimal reproducer (input file plus
