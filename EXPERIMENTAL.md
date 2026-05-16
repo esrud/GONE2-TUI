@@ -26,12 +26,6 @@ Switch back to the upstream-compatible code with `git checkout master`.
 - **`gone-ncurses` interface**: live chart of the Ne curve as the GA runs,
   with a top-right score box showing the current best residual. The
   experimental build wires this to the combo runtime above.
-- **`-k <φ>` (kinship filter)**: drops related individuals before the d²
-  calculation. φ is a KING-robust threshold (e.g. `0.0884` for 2nd-degree).
-  Also reports a sibship-based effective-breeders estimate.
-- **`-m <μ>` (heterozygosity anchor)**: a per-site mutation rate. The GA then
-  softly pulls the ancient-Ne plateau toward `H / (4μ)`, the mutation-drift
-  balance target. Optional; default is to leave the deep-time end unanchored.
 
 ## Visual comparison
 
